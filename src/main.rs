@@ -1,6 +1,9 @@
 use std::{collections::BTreeMap, convert::TryInto, env, sync::Arc};
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{
+    offset::{TimeZone, Utc},
+    DateTime, NaiveDateTime,
+};
 use futures::StreamExt;
 use smol::lock::RwLock;
 use telegram_bot::{GetFile, PhotoSize};
@@ -9,23 +12,31 @@ use tokio::{fs::File, io::AsyncWriteExt};
 #[tokio::main]
 async fn main() {
     let db = sled::open("../photo_ids").unwrap();
+    //I want to specify which photos to add to the tree --> Which to collect from the iter
+    // Local.ymd(y, m, d).hms(h, m, s)
+    let last_downloaded = Utc.ymd(2021, 01, 20).and_hms(11, 13, 01); //DateTime::parse_from_rfc3339("2021-01-20 11:13:01 UTC").unwrap(); //fix in a min
     let photos = db
         .iter()
         .filter_map(|data| {
-            data.ok().map(|(time, photo)| {
-                (
-                    DateTime::from_utc(
-                        NaiveDateTime::from_timestamp(
-                            i64::from_le_bytes(time.as_ref().try_into().unwrap()),
-                            0,
-                        ),
-                        Utc,
+            data.ok().and_then(|(time, photo)| {
+                let dt = DateTime::from_utc(
+                    NaiveDateTime::from_timestamp(
+                        i64::from_le_bytes(time.as_ref().try_into().unwrap()),
+                        0,
                     ),
-                    String::from_utf8(photo.as_ref().to_vec()).unwrap(),
-                )
+                    Utc,
+                );
+                //if dt is before last_downloaded, return none
+                if dt < last_downloaded {
+                    //date before what we want, return none {
+                    return None;
+                }
+                //takes a tuple, returns a tuple to be put into the tree
+                Some((dt, String::from_utf8(photo.as_ref().to_vec()).unwrap()))
             })
         })
-        .collect::<BTreeMap<DateTime<Utc>, String>>();
+        .collect::<BTreeMap<DateTime<Utc>, String>>(); //BTree map key has to be an ordered thing, and orders it for you
+
     let token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN not set");
     let api = Arc::new(RwLock::new(telegram_bot::Api::new(token.clone())));
     let token = Arc::new(token);
